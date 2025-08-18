@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# 単体テスト: ChatGPT/Gemini へのプロンプト送信（レシピJSON生成）
+# 使い方:
+#   bundle exec ruby bin/test_prompt --provider openai --meal lunch --show-prompt --verbose
+#   bundle exec ruby bin/test_prompt --provider gemini --model gemini-2.5-flash
+#   bundle exec ruby bin/test_prompt --lat 35.68 --lon 139.76 --tz Asia/Tokyo
+#
+require "optparse"
+require "json"
+require "dotenv/load"
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "recipe_poster/llm"
+require "recipe_poster/weather"
+require "recipe_poster/config"
+
+options = {
+  provider: ENV["AI_PROVIDER"] || "openai",
+  model: ENV["OPENAI_MODEL"] || ENV["GEMINI_MODEL"] || nil,
+  meal: "lunch",
+  lat: nil, lon: nil, tz: nil,
+  show_prompt: false,
+  verbose: false
+}
+
+OptionParser.new do |o|
+  o.on("--provider NAME", "openai | gemini（既定: openai）") { |v| options[:provider] = v }
+  o.on("--model NAME", "モデル名（未指定なら環境変数）") { |v| options[:model] = v }
+  o.on("--meal NAME", "lunch | dinner（既定: lunch）") { |v| options[:meal] = v }
+  o.on("--lat LAT", Float, "緯度") { |v| options[:lat] = v }
+  o.on("--lon LON", Float, "経度") { |v| options[:lon] = v }
+  o.on("--tz TZ", String, "タイムゾーン") { |v| options[:tz] = v }
+  o.on("--show-prompt", "送信するプロンプトを表示") { options[:show_prompt] = true }
+  o.on("-v", "--verbose", "詳細出力（JSON整形）") { options[:verbose] = true }
+end.parse!
+
+# Provider/model を環境変数へ流し込んで LLM 側の既存ロジックを活用
+ENV["AI_PROVIDER"] = options[:provider]
+if options[:model]
+  if options[:provider].downcase == "gemini"
+    ENV["GEMINI_MODEL"] = options[:model]
+  else
+    ENV["OPENAI_MODEL"] = options[:model]
+  end
+end
+
+lat, lon = if options[:lat] && options[:lon]
+  [options[:lat], options[:lon]]
+else
+  RecipePoster::Config.coords
+end
+tz = options[:tz] || RecipePoster::Config.tz
+
+# 天気を取得してプロンプト作成
+forecast = RecipePoster::Weather.fetch_daily(lat, lon, tz: tz)
+prompt = RecipePoster::LLM.build_prompt(forecast: forecast, meal: options[:meal])
+puts "----- PROMPT BEGIN -----\n#{prompt}\n----- PROMPT END -----" if options[:show_prompt]
+
+# 必須キーの確認（providerごとのキー）
+if options[:provider].downcase == "gemini"
+  abort "[ERROR] GEMINI_API_KEY が設定されていません" if (ENV["GEMINI_API_KEY"] || "").empty?
+  model = ENV["GEMINI_MODEL"] || "gemini-2.5-flash"
+else
+  abort "[ERROR] OPENAI_API_KEY が設定されていません" if (ENV["OPENAI_API_KEY"] || "").empty?
+  model = ENV["OPENAI_MODEL"] || "gpt-4o-mini"
+end
+
+# 実行
+begin
+  result = RecipePoster::LLM.generate_recipe(forecast: forecast, meal: options[:meal], model: model)
+rescue => e
+  warn "[ERROR] LLM呼び出し失敗: #{e.class}: #{e.message}"
+  exit 1
+end
+
+if options[:verbose]
+  puts JSON.pretty_generate(result)
+else
+  puts "title: #{result["title"]} (#{options[:meal]})"
+  puts "summary: #{result["summary"]}"
+  puts "servings: #{result["servings"]}  time: #{result["time_minutes"]} min"
+  puts "ingredients: #{result["ingredients"].size} items  steps: #{result["steps"].size}"
+end

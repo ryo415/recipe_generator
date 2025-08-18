@@ -22,7 +22,7 @@ module RecipePoster
 
       title = recipe["title"]
       date = Date.parse(forecast[:date]).strftime("%Y-%m-%d")
-      slug = "\#{date}-\#{meal}-\#{title.gsub(/[^\p{Alnum}]+/,'-').downcase}"[0,80]
+      slug = "#{date}-#{meal}-#{title.gsub(/[^\p{Alnum}]+/,'-').downcase}"[0,80]
 
       existing = WordPress.get_by_slug(slug)
       post = if existing.is_a?(Array) && !existing.empty?
@@ -35,13 +35,13 @@ module RecipePoster
                WordPress.create_post!(title: title, html: html, slug: slug)
              end
 
-      link = post["link"] || post.dig("guid","rendered") || "\#{Config.wp_base}/?p=\#{post["id"]}"
+      link = post["link"] || post.dig("guid","rendered") || "#{Config.wp_base}/?p=#{post["id"]}"
       meal_ja = (meal == "lunch" ? "昼" : "夜")
       d = Date.parse(forecast[:date]).strftime("%-m/%-d")
-      tweet = "本日の\#{meal_ja}（\#{d}・\#{weather_text}・\#{forecast[:tmax]}℃/\#{forecast[:tmin]}℃）\n\#{title}\n\#{link}"
+      tweet = "本日の#{meal_ja}（#{d}・#{weather_text}・#{forecast[:tmax]}℃/#{forecast[:tmin]}℃）\n#{title}\n#{link}"
 
       XPoster.post_tweet!(tweet)
-      puts "[OK] \#{meal} -> WP: \#{link}"
+      puts "[OK] #{meal} -> WP: #{link}"
     end
 
     def schedule

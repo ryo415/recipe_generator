@@ -1,0 +1,65 @@
+
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require "optparse"
+require "json"
+require "dotenv/load"
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "recipe_poster/wordpress"
+require "recipe_poster/config"
+
+options = { live: false, status: "draft", title: nil, slug: nil, delete_id: nil }
+OptionParser.new do |o|
+  o.on("--live", "本番実行（APIコールあり）") { options[:live] = true }
+  o.on("--dry-run", "ドライラン（既定）") { options[:live] = false }
+  o.on("--status STATUS", "draft | publish（既定: draft）") { |v| options[:status] = v }
+  o.on("--title TITLE", "投稿タイトル（未指定は自動生成）") { |v| options[:title] = v }
+  o.on("--slug SLUG", "スラッグ（未指定は自動生成）") { |v| options[:slug] = v }
+  o.on("--delete ID", Integer, "投稿IDを削除（--liveが自動有効）") { |v| options[:delete_id] = v; options[:live] = true }
+end.parse!
+
+if options[:delete_id]
+  begin
+    res = RecipePoster::WordPress.delete_post!(options[:delete_id], force: true)
+    puts "[OK] Deleted post ID=#{options[:delete_id]}"
+    puts JSON.pretty_generate(res)
+  rescue => e
+    warn "[ERROR] Delete failed: #{e.class}: #{e.message}"
+    exit 1
+  end
+  exit 0
+end
+
+now = Time.now
+title = options[:title] || "API接続テスト #{now.strftime("%Y-%m-%d %H:%M:%S")}"
+slug  = options[:slug]  || "api-test-#{now.strftime("%Y%m%d%H%M%S")}"
+html  = <<~HTML
+  <p>WordPress REST API 接続テスト投稿です。</p>
+  <ul>
+    <li>実行時刻: #{now}</li>
+    <li>status: #{options[:status]}</li>
+  </ul>
+HTML
+
+if options[:live]
+  required = %w[WP_BASE_URL WP_USERNAME WP_APP_PASSWORD]
+  missing = required.select { |k| (ENV[k] || "").empty? }
+  abort "[ERROR] 未設定の環境変数: #{missing.join(", ")}" unless missing.empty?
+  begin
+    post = RecipePoster::WordPress.create_post!(title: title, html: html, slug: slug, status: options[:status])
+  rescue => e
+    warn "[ERROR] Create failed: #{e.class}: #{e.message}"
+    exit 1
+  end
+  link = post["link"] || post.dig("guid","rendered") || "#{RecipePoster::Config.wp_base}/?p=#{post["id"]}"
+  puts "[OK] Created: id=#{post["id"]} status=#{post["status"]} link=#{link}"
+  puts JSON.pretty_generate(post)
+else
+  puts "[DRY-RUN] 以下の内容で作成予定（APIコールなし）:"
+  puts JSON.pretty_generate({ title: title, slug: slug, status: options[:status], html: html })
+  puts "[INFO] 必要な環境変数（未設定は (unset) と表示）:"
+  puts "  WP_BASE_URL:    #{ENV["WP_BASE_URL"] || "(unset)"}"
+  puts "  WP_USERNAME:    #{ENV["WP_USERNAME"] || "(unset)"}"
+  puts "  WP_APP_PASSWORD:#{ENV["WP_APP_PASSWORD"] ? "(len=#{ENV["WP_APP_PASSWORD"].size})" : " (unset)"}"
+  puts "[HINT] 本番実行するには --live を付け、上記ENVを設定してください。"
+end

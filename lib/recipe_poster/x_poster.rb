@@ -11,7 +11,7 @@ module RecipePoster
     API_BASE = "https://api.x.com"
 
     def post_tweet!(text)
-      url = "\#{API_BASE}/2/tweets"
+      url = "#{API_BASE}/2/tweets"
       creds = Config.x_credentials
       header = SimpleOAuth::Header.new(:post, url, {}, {
         consumer_key: creds[:consumer_key],
@@ -25,7 +25,7 @@ module RecipePoster
         r.headers["Content-Type"] = "application/json"
         r.body = JSON.dump({ text: text })
       end
-      raise "X API error: \#{res.status} \#{res.body}" unless res.success?
+      raise "X API error: #{res.status} #{res.body}" unless res.success?
       JSON.parse(res.body)
     end
   end

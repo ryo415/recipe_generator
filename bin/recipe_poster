@@ -3,6 +3,7 @@
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "recipe_poster/run"
+require "dotenv/load"
 
 cmd = ARGV[0] || "once"
 case cmd

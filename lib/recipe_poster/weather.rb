@@ -3,6 +3,7 @@ require "json"
 require "net/http"
 require "uri"
 require "date"
+require "dotenv/load"
 require_relative "config"
 
 module RecipePoster
@@ -10,9 +11,9 @@ module RecipePoster
     module_function
 
     def fetch_daily(lat, lon, tz: Config.tz)
-      url = URI("https://api.open-meteo.com/v1/forecast"                   "?latitude=\#{lat}&longitude=\#{lon}"                   "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,weathercode"                   "&timezone=\#{URI.encode_www_form_component(tz)}")
+      url = URI("https://api.open-meteo.com/v1/forecast"                   "?latitude=#{lat}&longitude=#{lon}"                   "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,weathercode"                   "&timezone=#{URI.encode_www_form_component(tz)}")
       res = Net::HTTP.get_response(url)
-      raise "Weather API error: \#{res.code} \#{res.body}" unless res.is_a?(Net::HTTPSuccess)
+      raise "Weather API error: #{res.code} #{res.body}" unless res.is_a?(Net::HTTPSuccess)
       data = JSON.parse(res.body)
       daily = data["daily"]
       idx = 0

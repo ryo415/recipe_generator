@@ -36,7 +36,7 @@ module RecipePoster
     end
 
     def wp_basic_auth
-      Base64.strict_encode64("\#{wp_user}:\#{wp_app_password}")
+      Base64.strict_encode64("#{wp_user}:#{wp_app_password}")
     end
 
     def x_credentials

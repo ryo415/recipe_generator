@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require "optparse"
+require "dotenv/load"
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "recipe_poster/x_poster"
+require "recipe_poster/config"
+
+options = { live: false, text: nil }
+OptionParser.new do |o|
+  o.on("--live", "実際に投稿（本番）") { options[:live] = true }
+  o.on("--dry-run", "ドライラン（デフォルト）") { options[:live] = false }
+  o.on("--text TEXT", "投稿本文") { |v| options[:text] = v }
+end.parse!
+
+text = options[:text] || "X API テスト投稿（#{Time.now.strftime("%Y-%m-%d %H:%M:%S")}）"
+creds = RecipePoster::Config.x_credentials
+
+missing = creds.select { |k,v| v.to_s.strip.empty? }.keys
+abort "[ERROR] 未設定の環境変数: #{missing.join(", ")}" unless missing.empty?
+
+if options[:live]
+  puts "[LIVE] 投稿を実行します:\n---\n#{text}\n---"
+  res = RecipePoster::XPoster.post_tweet!(text)
+  puts "[OK] ツイート作成 ID=#{res.dig("data","id")}"
+  puts JSON.pretty_generate(res)
+else
+  puts "[DRY-RUN] 以下の本文で投稿予定（APIコールなし）:\n---\n#{text}\n---"
+  puts "[INFO] 認証キー（存在チェックのみ）:"
+  puts "  X_API_KEY:       #{creds[:consumer_key][0,4]}..."
+  puts "  X_API_SECRET:    (len=#{creds[:consumer_secret].size})"
+  puts "  X_ACCESS_TOKEN:  #{creds[:token][0,4]}..."
+  puts "  X_ACCESS_SECRET: (len=#{creds[:token_secret].size})"
+  puts "[HINT] 本番投稿するには --live を付けてください。"
+end

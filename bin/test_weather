@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# 単体テスト: Weather（Open-Meteoから今日の予報を取得）
+# 使い方:
+#   bundle exec ruby bin/test_weather
+#   bundle exec ruby bin/test_weather --lat 35.68 --lon 139.76 --tz Asia/Tokyo
+#   bundle exec ruby bin/test_weather --date 2025-01-05   # season_for の確認
+#
+require "optparse"
+require "json"
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "recipe_poster/weather"
+require "recipe_poster/config"
+
+options = { lat: nil, lon: nil, tz: nil, date: nil, verbose: false }
+OptionParser.new do |o|
+  o.on("--lat LAT", Float, "緯度（未指定ならENVまたは既定）") { |v| options[:lat] = v }
+  o.on("--lon LON", Float, "経度（未指定ならENVまたは既定）") { |v| options[:lon] = v }
+  o.on("--tz TZ", String, "タイムゾーン（未指定ならENVまたはAsia/Tokyo）") { |v| options[:tz] = v }
+  o.on("--date YYYY-MM-DD", String, "季節判定のテスト用日付（season_forのみ）") { |v| options[:date] = v }
+  o.on("-v", "--verbose", "詳細出力") { options[:verbose] = true }
+end.parse!
+
+lat, lon = if options[:lat] && options[:lon]
+  [options[:lat], options[:lon]]
+else
+  RecipePoster::Config.coords
+end
+tz = options[:tz] || RecipePoster::Config.tz
+
+# season_for の単体テストだけしたい場合
+if options[:date]
+  season = RecipePoster::Weather.season_for(options[:date])
+  puts({ date: options[:date], season: season }.to_json)
+  exit 0
+end
+
+begin
+  forecast = RecipePoster::Weather.fetch_daily(lat, lon, tz: tz)
+rescue => e
+  warn "[ERROR] Weather API失敗: #{e.class}: #{e.message}"
+  exit 1
+end
+
+out = {
+  lat: lat, lon: lon, tz: tz,
+  forecast: forecast,
+  weather_text: RecipePoster::Weather.code_to_text(forecast[:code]),
+  season: RecipePoster::Weather.season_for(forecast[:date])
+}
+
+if options[:verbose]
+  puts JSON.pretty_generate(out)
+else
+  # 簡潔表示
+  f = out[:forecast]
+  puts "date=#{f[:date]} tmax=#{f[:tmax]} tmin=#{f[:tmin]} pop=#{f[:pop]}% rain_sum=#{f[:rain_sum]} code=#{f[:code]} (#{out[:weather_text]}) season=#{out[:season]}"
+end

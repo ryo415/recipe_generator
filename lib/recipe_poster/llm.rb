@@ -12,12 +12,12 @@ module RecipePoster
       season = Weather.season_for(forecast[:date])
       weather_text = Weather.code_to_text(forecast[:code])
       <<~PROMPT
-      あなたは日本の家庭料理に詳しいプロの料理家です。以下条件に最適な「\#{meal == 'lunch' ? 'ランチ' : '夕食'}」レシピを日本語で1つ提案してください。
+      あなたは日本の家庭料理に詳しいプロの料理家です。以下条件に最適な「#{meal == 'lunch' ? 'ランチ' : '夕食'}」レシピを日本語で1つ提案してください。
 
       # 条件
-      - 季節: \#{season}
-      - 天気: \#{weather_text}（降水確率: \#{forecast[:pop]}% / 降水量合計: \#{forecast[:rain_sum]}mm）
-      - 気温: 最高\#{forecast[:tmax]}℃ / 最低\#{forecast[:tmin]}℃
+      - 季節: #{season}
+      - 天気: #{weather_text}（降水確率: #{forecast[:pop]}% / 降水量合計: #{forecast[:rain_sum]}mm）
+      - 気温: 最高#{forecast[:tmax]}℃ / 最低#{forecast[:tmin]}℃
       - 日本の家庭で作りやすい（手に入る食材、道具）
       - 季節感・気温に合う献立（暑い日はさっぱり・冷たい、寒い日は温かい・滋養 など）
       - 1品で主菜になること。所要時間は45分以内目標
@@ -48,13 +48,13 @@ module RecipePoster
 
     def gemini_generate(forecast:, meal:, model:)
       api_key = ENV.fetch("GEMINI_API_KEY")
-      url = "https://generativelanguage.googleapis.com/v1beta/models/\#{model}:generateContent?key=\#{api_key}"
+      url = "https://generativelanguage.googleapis.com/v1beta/models/#{model}:generateContent?key=#{api_key}"
       body = {
         contents: [{ role: "user", parts: [{ text: build_prompt(forecast: forecast, meal: meal) }] }],
         generationConfig: { response_mime_type: "application/json" }
       }
       res = Faraday.post(url) { |r| r.headers["Content-Type"] = "application/json"; r.body = JSON.dump(body) }
-      raise "Gemini API error: \#{res.status} \#{res.body}" unless res.success?
+      raise "Gemini API error: #{res.status} #{res.body}" unless res.success?
       json_text = JSON.parse(res.body).dig("candidates", 0, "content", "parts", 0, "text")
       JSON.parse(json_text)
     end
@@ -72,10 +72,10 @@ module RecipePoster
       }
       res = Faraday.post(url) do |r|
         r.headers["Content-Type"] = "application/json"
-        r.headers["Authorization"] = "Bearer \#{api_key}"
+        r.headers["Authorization"] = "Bearer #{api_key}"
         r.body = JSON.dump(body)
       end
-      raise "OpenAI API error: \#{res.status} \#{res.body}" unless res.success?
+      raise "OpenAI API error: #{res.status} #{res.body}" unless res.success?
       txt = JSON.parse(res.body).dig("choices", 0, "message", "content")
       JSON.parse(txt)
     end
