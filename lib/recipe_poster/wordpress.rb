@@ -8,10 +8,10 @@ module RecipePoster
   module WordPress
     module_function
 
-    def create_post!(title:, html:, slug:, status: "draft", tag_names: nil, category_names: nil, featured_image_url: nil)
+    def create_post!(title:, html:, slug:, status: "draft", tag_names: nil, category_names: nil, featured_image_url: nil, featured_media_id: nil)
       tag_ids = ensure_term_ids(Array(tag_names), "tags")
       cat_ids = ensure_term_ids(Array(category_names), "categories")
-      media_id = featured_image_url ? upload_media_from_url!(featured_image_url) : nil
+      media_id = featured_media_id || (featured_image_url ? upload_media_from_url!(featured_image_url) : nil)
 
       payload = {
         title: title, content: html, slug: slug, status: status
@@ -30,6 +30,33 @@ module RecipePoster
       end
       raise "WordPress create error: #{res.status} #{res.body}" unless res.success?
       JSON.parse(res.body)
+    end
+
+    def upload_media_from_bytes!(bytes, filename:, mime:)
+      url = "#{Config.wp_base}/wp-json/wp/v2/media"
+
+      http_timeout       = (ENV["WP_HTTP_TIMEOUT"] || "180").to_i
+     http_open_timeout  = (ENV["WP_HTTP_OPEN_TIMEOUT"] || "15").to_i
+      http_write_timeout = (ENV["WP_HTTP_WRITE_TIMEOUT"] || "180").to_i
+
+      conn = Faraday.new do |f|
+        f.request :url_encoded
+        f.adapter :net_http
+        f.options.timeout       = http_timeout
+        f.options.open_timeout  = http_open_timeout
+        f.options.read_timeout  = http_timeout
+        f.options.write_timeout = http_write_timeout
+      end
+
+      res = conn.post(url) do |r|
+        r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
+        r.headers["Content-Type"]  = mime
+        r.headers["Content-Disposition"] = "attachment; filename=\"#{filename}\""
+        r.body = bytes
+      end
+      raise "WordPress media error: #{res.status} #{res.body}" unless res.success?
+      json = JSON.parse(res.body)
+      [json["id"], json["source_url"]]
     end
 
     def strip_step_prefix(s)
@@ -221,6 +248,24 @@ module RecipePoster
 
           </div>
         HTML
+    end
+
+    # 指定スラッグが既に使われているか（post / page をチェック）
+    def slug_taken?(slug)
+      enc = URI.encode_www_form_component(slug)
+      headers = { "Authorization" => "Basic #{Config.wp_basic_auth}" }
+      # posts
+      u1 = "#{Config.wp_base}/wp-json/wp/v2/posts?slug=#{enc}&_fields=id&per_page=1"
+      r1 = Faraday.get(u1) { |r| headers.each { |k,v| r.headers[k]=v } }
+      if r1.success? && JSON.parse(r1.body).is_a?(Array) && !JSON.parse(r1.body).empty?
+        return true
+      end
+      # pages（同スラッグの固定ページがあると URL 競合し得るので念のため）
+      u2 = "#{Config.wp_base}/wp-json/wp/v2/pages?slug=#{enc}&_fields=id&per_page=1"
+      r2 = Faraday.get(u2) { |r| headers.each { |k,v| r.headers[k]=v } }
+      r2.success? && JSON.parse(r2.body).is_a?(Array) && !JSON.parse(r2.body).empty?
+    rescue
+      false
     end
   end
 end

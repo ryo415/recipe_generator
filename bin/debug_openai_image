@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require "bundler/setup"
+require "dotenv/load"
+require "json"
+require "faraday"
+
+api_key = ENV.fetch("OPENAI_API_KEY")
+size = (ENV["IMG_SIZE"] || "1024x1024")
+
+body = { model: "gpt-image-1", prompt: "A simple bowl of rice, studio light.", size: size }
+res = Faraday.post("https://api.openai.com/v1/images/generations") do |r|
+  r.headers["Authorization"] = "Bearer #{api_key}"
+  r.headers["Content-Type"]  = "application/json"
+  r.body = JSON.dump(body)
+end
+
+hdr = {}; res.headers.each { |k,v| hdr[k.to_s.downcase] = v }
+puts "HTTP #{res.status}"
+puts "x-request-id: #{hdr['x-request-id']}"
+puts "rate: limit=#{hdr['x-ratelimit-limit-requests']}/m remain=#{hdr['x-ratelimit-remaining-requests']} reset=#{hdr['x-ratelimit-reset-requests']}"
+begin
+  j = JSON.parse(res.body)
+  puts "error.code: #{j.dig('error','code')}" if j["error"]
+rescue; end
+puts res.body

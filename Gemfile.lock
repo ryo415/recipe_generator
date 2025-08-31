@@ -10,6 +10,8 @@ GEM
       faraday-net_http (>= 2.0, < 3.5)
       json
       logger
+    faraday-multipart (1.1.1)
+      multipart-post (~> 2.0)
     faraday-net_http (3.4.1)
       net-http (>= 0.5.0)
     fugit (1.11.1)
@@ -17,6 +19,8 @@ GEM
       raabro (~> 1.4)
     json (2.13.2)
     logger (1.7.0)
+    mini_magick (4.13.2)
+    multipart-post (2.4.1)
     net-http (0.6.0)
       uri
     raabro (1.4.0)
@@ -26,6 +30,7 @@ GEM
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
     uri (1.0.3)
+    webrick (1.9.1)
 
 PLATFORMS
   ruby
@@ -35,8 +40,11 @@ DEPENDENCIES
   base64 (~> 0.2)
   dotenv (~> 3.1)
   faraday (~> 2.10)
+  faraday-multipart (~> 1.0)
+  mini_magick (~> 4.12)
   rufus-scheduler (~> 3.9)
   simple_oauth (~> 0.3)
+  webrick (~> 1.8)
 
 RUBY VERSION
    ruby 3.4.2p28

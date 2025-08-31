@@ -39,6 +39,7 @@ module RecipePoster
         "steps": [string, ...],
         "tips": [string, ...],
         "nutrition": {"kcal": integer, "protein_g": integer, "fat_g": integer, "carb_g": integer},
+        "slug_tokens_en": [string, ...],
         "hashtags": [string, ...],
 
         // 多様性メタ（新規）
@@ -132,6 +133,7 @@ module RecipePoster
         "ingredients": [{"item": string, "amount": string}],
         "steps": [string, ...],
         "tips": [string, ...],
+        "slug_tokens_en": [string, ...],
         "nutrition": {"kcal": integer, "protein_g": integer, "fat_g": integer, "carb_g": integer},
         "hashtags": [string, ...]
       }

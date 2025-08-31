@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require "bundler/setup"
+require "dotenv/load"
+require "webrick"
+require "securerandom"
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "recipe_poster/x_oauth2"
+
+redirect_uri = ENV["X_REDIRECT_URI"] || "http://127.0.0.1:5487/callback"
+verifier, challenge = RecipePoster::XOauth2.pkce_pair
+state = SecureRandom.hex(16)
+url = RecipePoster::XOauth2.authorize_url(state: state, challenge: challenge, redirect_uri: redirect_uri)
+puts "Open this URL:\n#{url}"
+
+code = nil
+if redirect_uri.start_with?("http://127.0.0.1:")
+  port = redirect_uri.split(":").last.split("/").first.to_i
+  srv = WEBrick::HTTPServer.new(Port: port, BindAddress: "127.0.0.1", Logger: WEBrick::Log.new("/dev/null"), AccessLog: [])
+  trap("INT") { srv.shutdown }
+  srv.mount_proc "/callback" do |req, res|
+    if req.query["state"] != state
+      res.status = 400; res.body = "state mismatch"; next
+    end
+    code = req.query["code"]
+    res.status = 200; res["Content-Type"] = "text/plain"; res.body = "OK. You can close this window."
+    Thread.new { sleep 0.1; srv.shutdown }
+  end
+  Thread.new { srv.start }
+  180.times { break if code; sleep 1 }
+  abort "No code received." unless code
+else
+  print "Paste ?code= from redirected URL: "
+  code = STDIN.gets&.strip or abort "no code"
+end
+
+tok = RecipePoster::XOauth2.exchange_code!(code: code, verifier: verifier, redirect_uri: redirect_uri)
+puts "Saved tokens to data/x_tokens.json"
+puts "access_token (tail): ...#{tok["access_token"][-6,6]}"
