@@ -11,24 +11,39 @@ module RecipePoster
     def create_post!(title:, html:, slug:, status: "draft", tag_names: nil, category_names: nil, featured_image_url: nil, featured_media_id: nil)
       tag_ids = ensure_term_ids(Array(tag_names), "tags")
       cat_ids = ensure_term_ids(Array(category_names), "categories")
-      media_id = featured_media_id || (featured_image_url ? upload_media_from_url!(featured_image_url) : nil)
+      if featured_media_id.nil? && featured_image_url
+        featured_media_id, _url = upload_media_from_url!(featured_image_url)
+      end
 
-      payload = {
-        title: title, content: html, slug: slug, status: status
+      body = {
+        title:   title,
+        content: html,
+        status:  status,
+        slug:    slug,
       }
-      payload[:tags] = tag_ids unless tag_ids.empty?
-      payload[:categories] = cat_ids unless cat_ids.empty?
-      payload[:featured_media] = media_id if media_id
+      body[:tags] = tag_ids unless tag_ids.empty?
+      body[:categories] = cat_ids unless cat_ids.empty?
+      body[:featured_media] = featured_media_id if featured_media_id
 
       url = "#{Config.wp_base}/wp-json/wp/v2/posts"
-
       res = Faraday.post(url) do |r|
         r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
         r.headers["Content-Type"]  = "application/json"
         r.headers["Accept"]        = "application/json"
-        r.body = JSON.dump(payload)
+        r.body = JSON.dump(body)
       end
       raise "WordPress create error: #{res.status} #{res.body}" unless res.success?
+      JSON.parse(res.body)
+    end
+
+    def update_post!(post_id, attrs = {})
+      url = "#{Config.wp_base}/wp-json/wp/v2/posts/#{post_id}"
+      res = Faraday.post(url) do |r|
+        r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
+        r.headers["Content-Type"]  = "application/json"
+        r.body = JSON.dump(attrs)
+      end
+      raise "WordPress update error: #{res.status} #{res.body}" unless res.success?
       JSON.parse(res.body)
     end
 
@@ -36,7 +51,7 @@ module RecipePoster
       url = "#{Config.wp_base}/wp-json/wp/v2/media"
 
       http_timeout       = (ENV["WP_HTTP_TIMEOUT"] || "180").to_i
-     http_open_timeout  = (ENV["WP_HTTP_OPEN_TIMEOUT"] || "15").to_i
+      http_open_timeout  = (ENV["WP_HTTP_OPEN_TIMEOUT"] || "15").to_i
       http_write_timeout = (ENV["WP_HTTP_WRITE_TIMEOUT"] || "180").to_i
 
       conn = Faraday.new do |f|
@@ -48,7 +63,7 @@ module RecipePoster
         f.options.write_timeout = http_write_timeout
       end
 
-      res = conn.post(url) do |r|
+      res = Faraday.post(url) do |r|
         r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
         r.headers["Content-Type"]  = mime
         r.headers["Content-Disposition"] = "attachment; filename=\"#{filename}\""
@@ -57,6 +72,19 @@ module RecipePoster
       raise "WordPress media error: #{res.status} #{res.body}" unless res.success?
       json = JSON.parse(res.body)
       [json["id"], json["source_url"]]
+    end
+
+    def upload_media_from_url!(image_url)
+      # 簡易実装：URLそのまま fetch → bytes アップ（リモートDL不可の環境なら Faraday 経由）
+      resp = Faraday.get(image_url)
+      raise "Fetch image failed: #{resp.status}" unless resp.success?
+      guessed_mime = mime || (image_url.downcase.end_with?(".png") ? "image/png" : "image/jpeg")
+      fname = filename || File.basename(URI.parse(image_url).path.presence || "image.jpg")
+      upload_media_from_bytes!(resp.body, filename: fname, mime: guessed_mime)
+    end
+
+    def set_featured_media!(post_id, media_id)
+      update_post!(post_id, { featured_media: media_id })
     end
 
     def strip_step_prefix(s)
@@ -138,26 +166,7 @@ module RecipePoster
       JSON.parse(res.body)
     end
 
-    def upload_media_from_url!(image_url)
-      img = Faraday.get(image_url)
-      raise "Fetch image failed: #{img.status}" unless img.success?
-      filename = File.basename(URI.parse(image_url).path)
-      mime = case File.extname(filename).downcase
-             when ".jpg", ".jpeg" then "image/jpeg"
-             when ".png"          then "image/png"
-             when ".webp"         then "image/webp"
-             else "application/octet-stream"
-             end
-      url = "#{Config.wp_base}/wp-json/wp/v2/media"
-      res = Faraday.post(url) do |r|
-        r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
-        r.headers["Content-Type"]  = mime
-        r.headers["Content-Disposition"] = "attachment; filename=\"#{filename}\""
-        r.body = img.body
-      end
-      raise "WordPress media error: #{res.status} #{res.body}" unless res.success?
-      JSON.parse(res.body)["id"]
-    end
+
 
     def build_html(recipe, meta)
       ing_lines = recipe["ingredients"].map { |i| "<li>#{i["item"]} – #{i["amount"]}</li>" }.join
@@ -266,6 +275,35 @@ module RecipePoster
       r2.success? && JSON.parse(r2.body).is_a?(Array) && !JSON.parse(r2.body).empty?
     rescue
       false
+    end
+
+    def ensure_terms!(type, names)
+      names = Array(names).map(&:to_s).map(&:strip).reject(&:empty?).uniq
+      return [] if names.empty?
+      endpoint = type == :tag ? "tags" : "categories"
+      ids = []
+      names.each do |name|
+        # 既存検索
+        q = Faraday.get("#{Config.wp_base}/wp-json/wp/v2/#{endpoint}?search=#{URI.encode_www_form_component(name)}") do |r|
+          r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
+        end
+        raise "WordPress term search error: #{q.status} #{q.body}" unless q.success?
+        arr = JSON.parse(q.body)
+        hit = arr.find { |t| t["name"].to_s == name }
+        if hit
+          ids << hit["id"]
+        else
+          # 作成
+          create = Faraday.post("#{Config.wp_base}/wp-json/wp/v2/#{endpoint}") do |r|
+            r.headers["Authorization"] = "Basic #{Config.wp_basic_auth}"
+            r.headers["Content-Type"]  = "application/json"
+            r.body = JSON.dump({ name: name })
+          end
+          raise "WordPress term create error: #{create.status} #{create.body}" unless create.success?
+          ids << JSON.parse(create.body)["id"]
+        end
+      end
+      ids
     end
   end
 end

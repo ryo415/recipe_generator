@@ -38,45 +38,56 @@ module RecipePoster
 
       existing = WordPress.get_by_slug(slug)
 
+      html = WordPress.build_html(recipe, {
+        season: season,
+        weather_text: weather_text,
+        pop: forecast[:pop],
+        tmax: forecast[:tmax],
+        tmin: forecast[:tmin]
+      })
+
+      # 生成画像を作ってWPへアップロード
+      media_id, hero_url = nil, nil
+      begin
+        media_id, hero_url = ImageGen.generate_and_upload!(recipe: recipe, season: season, weather_text: weather_text, size: ENV["IMG_SIZE"])
+      rescue => e
+        warn "[WARN] image generation failed: #{e.class}: #{e.message}"
+        if (fallback = ENV["DEFAULT_IMAGE_URL"] || ENV["WP_DEFAULT_IMAGE_URL"])
+          media_id, hero_url = RecipePoster::WordPress.upload_media_from_url!(fallback)
+        end
+      end
+
+      # 本文の先頭に <figure> を差し込む（生成成功時のみ）
+      if hero_url
+        hero_html = %Q{<figure class="rp-hero"><img src="#{hero_url}" alt="#{recipe["title"]} 完成イメージ" loading="lazy" decoding="async"></figure>}
+        html = hero_html + "\n" + html
+      end
+
+      tags = Array(recipe["hashtags"]).map { |h| h.to_s.sub(/^#/, "") }.reject(&:empty?).uniq
+      tags |= [season, weather_text].compact
+
+      cats = [(meal == "lunch" ? "昼ごはん" : "夜ごはん")]
+
       post = if existing.is_a?(Array) && !existing.empty?
-               existing.first
-             else
-               html = WordPress.build_html(recipe, {
-                 season: season, weather_text: weather_text,
-                 pop: forecast[:pop], tmax: forecast[:tmax], tmin: forecast[:tmin]
-               })
-
-               # 生成画像を作ってWPへアップロード
-               media_id, hero_url = nil, nil
-               begin
-                 media_id, hero_url = ImageGen.generate_and_upload!(recipe: recipe, season: season, weather_text: weather_text, size: ENV["IMG_SIZE"])
-               rescue => e
-                 warn "[WARN] image generation failed: #{e.class}: #{e.message}"
-               end
-
-               # 本文の先頭に <figure> を差し込む（生成成功時のみ）
-               if hero_url
-                 hero_html = %Q{<figure class="rp-hero"><img src="#{hero_url}" alt="#{recipe["title"]} 完成イメージ" loading="lazy" decoding="async"></figure>}
-                 html = hero_html + "\n" + html
-               end
-
-               tags = Array(recipe["hashtags"]).map { |h| h.to_s.sub(/^#/, "") }.reject(&:empty?).uniq
-               tags |= [season, weather_text].compact
-
-               cats = [(meal == "lunch" ? "昼ごはん" : "夜ごはん")]
-
-               featured = ENV["DEFAULT_IMAGE_URL"] || ENV["WP_DEFAULT_IMAGE_URL"]
-
-              WordPress.create_post!(
-                title: title,
-                html: html,
-                slug: slug,
-                status: "publish",
-                tag_names: tags,                 # ← タグ名配列
-                category_names: cats,            # ← カテゴリ名配列
-                featured_image_url: featured     # ← 画像URL（nilなら無視）
-              )
-            end
+                p = existing.first
+                # 既存記事で featured が未設定なら後付け
+                if media_id && (p["featured_media"].to_i <= 0)
+                  RecipePoster::WordPress.set_featured_media!(p["id"], media_id)
+                  # 反映後の情報を取り直す
+                  p = RecipePoster::WordPress.get_by_slug(slug).first || p
+                end
+                p
+              else
+                WordPress.create_post!(
+                  title: title,
+                  html: html,
+                  slug: slug,
+                  status: "publish",
+                  tag_names: tags,                 # 既存のタグ配列
+                  category_names: cats,            # 既存のカテゴリ配列
+                  featured_media_id: media_id      # ★ 同じ画像をアイキャッチに
+                )
+              end
 
       RecipePoster::History.record!(
         "meal" => meal,
