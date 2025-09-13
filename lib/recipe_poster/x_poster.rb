@@ -70,6 +70,28 @@ module RecipePoster
       v2_post_tweet!(text, media_ids: [mid])
     end
 
+    def set_media_alt_text!(media_id, alt_text)
+      return true if alt_text.to_s.empty?
+      url  = "#{UPLOAD_V1}/media/metadata/create.json"
+      auth = oauth1_header(:post, url, {})
+      body = { media_id: media_id, alt_text: { text: alt_text.to_s[0, 1000] } }
+      res = http.post(url) do |r|
+        r.headers["Authorization"] = auth
+        r.headers["Content-Type"]  = "application/json"
+        r.body = JSON.dump(body)
+      end
+      raise "X media alt error: #{res.status} #{res.body}" unless res.success?
+      true
+    end
+
+    # バイト列を直接添付してツイート（v2 /2/tweets を使用）
+    def post_tweet_with_image_bytes!(text, bytes, mime: "image/jpeg", alt_text: nil)
+      raise ArgumentError, "bytes is empty" if !bytes || bytes.empty?
+      mid = upload_media_bytes!(bytes, mime: mime) # v1.1
+      set_media_alt_text!(mid, alt_text) if alt_text
+      v2_post_tweet!(text, media_ids: [mid])       # v2
+    end
+
     def post_tweet!(text) = v2_post_tweet!(text)
   end
 end

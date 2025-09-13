@@ -10,6 +10,7 @@ module RecipePoster
 
     # 例: throttle!("openai_images", min_interval_ms: 2000)
     def throttle!(key, min_interval_ms:)
+      puts "[INFO] start throttle"
       FileUtils.mkdir_p(File.dirname(STATE))
       File.open(STATE, File.exist?(STATE) ? "r+" : "w+") do |f|
         f.flock(File::LOCK_EX)
@@ -41,6 +42,7 @@ module RecipePoster
     end
 
     def set_cooldown!(key, seconds:)
+      puts "[INFO] start set_cooldown"
       FileUtils.mkdir_p(File.dirname(cooldown_path(key)))
       File.write(cooldown_path(key), (monotonic + seconds).to_f.to_s)
     end

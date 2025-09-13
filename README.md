@@ -34,3 +34,10 @@ bundle exec ruby bin/recipe_poster schedule
 - `lib/recipe_poster/x_poster.rb` … X /2/tweets 投稿
 - `lib/recipe_poster/run.rb` … 実行フロー（once / schedule）
 - `bin/recipe_poster` … CLI エントリ
+
+## Other
+インストール推奨
+```
+sudo apt-get update
+sudo apt-get install -y libvips imagemagick webp
+```
