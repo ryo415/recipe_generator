@@ -1,0 +1,167 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# 既存記事に Rank Math メタを後付け更新する CLI
+# - ID/スラッグ/URL を渡すと、本文とタイトルからメタを生成し PATCH
+# - --dry-run で送信せずプレビュー
+#
+# 事前条件:
+#  - lib/seo_meta_builder.rb / lib/rank_math_poster.rb が存在し、Config.wp_base / Config.wp_basic_auth が設定済み
+#  - mu-plugin で rank_math_* メタを show_in_rest 公開済み（前回のスニペット）
+
+require "optparse"
+require "json"
+require "uri"
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "config"
+require "rank_math_poster"
+require "seo_meta_builder"
+
+def abort!(msg, code: 1)
+  $stderr.puts "[ERROR] #{msg}"
+  exit(code)
+end
+
+options = {
+  ids: [],
+  slugs: [],
+  urls: [],
+  stdin: false,
+  dry_run: false,
+  quiet: false
+}
+
+parser = OptionParser.new do |o|
+  o.banner = "Usage: bin/update_rankmath_meta [options]\n\n" \
+             "Examples:\n" \
+             "  # 単一IDを更新\n" \
+             "  bundle exec bin/update_rankmath_meta --id 1234\n\n" \
+             "  # 複数IDを一括更新\n" \
+             "  bundle exec bin/update_rankmath_meta --ids '12,34,56'\n\n" \
+             "  # スラッグやURLから解決\n" \
+             "  bundle exec bin/update_rankmath_meta --slug 'garibata-chicken'\n" \
+             "  bundle exec bin/update_rankmath_meta --url  'https://example.com/garibata-chicken/'\n\n" \
+             "  # 標準入力: 1行1つ（ID/スラッグ/URLを混在可）\n" \
+             "  cat list.txt | bundle exec bin/update_rankmath_meta --stdin\n\n" \
+             "  # 送信せずプレビュー\n" \
+             "  bundle exec bin/update_rankmath_meta --id 1234 --dry-run\n"
+
+  o.on("--id ID", Integer, "対象の投稿ID（複数回指定可）") { |v| options[:ids] << v }
+  o.on("--ids LIST", "カンマ区切りID（例: '1,2,3'）") { |v| options[:ids].concat v.split(/\s*,\s*/).map(&:to_i) }
+  o.on("--slug SLUG", "スラッグ（複数回指定可）") { |v| options[:slugs] << v }
+  o.on("--url URL", "投稿URL（複数回指定可）") { |v| options[:urls] << v }
+  o.on("--stdin", "標準入力からID/スラッグ/URLを受け取る（1行1つ）") { options[:stdin] = true }
+  o.on("--dry-run", "API送信せずメタを表示のみ") { options[:dry_run] = true }
+  o.on("--quiet", "更新ログを簡潔表示") { options[:quiet] = true }
+  o.on("-h", "--help", "このヘルプを表示") { puts o; exit 0 }
+end
+
+begin
+  parser.parse!
+rescue OptionParser::ParseError => e
+  abort!(e.message + "\n\n" + parser.to_s)
+end
+
+def say(msg, quiet:)
+  puts msg unless quiet
+end
+
+def parse_stdin
+  return [] unless STDIN.tty? == false
+  STDIN.read.to_s.lines.map(&:strip).reject(&:empty?)
+end
+
+def token_to_post_id(token)
+  # 数字ならID
+  return token.to_i if token =~ /\A\d+\z/
+
+  # URLなら末尾のスラッグ候補を抜く
+  if token =~ %r{\Ahttps?://}i
+    begin
+      path = URI(token).path
+      segs = path.split("/").reject(&:empty?)
+      # 一般的な WP パーマリンク: 最後のセグメントがスラッグ
+      slug = segs.last
+      return find_post_id_by_slug(slug) if slug && !slug.empty?
+    rescue
+      # fallthrough
+    end
+  end
+
+  # それ以外はスラッグとして解決
+  find_post_id_by_slug(token)
+end
+
+def find_post_id_by_slug(slug)
+  res = RankMathPoster.conn.get("#{Config.wp_base}/wp-json/wp/v2/posts?slug=#{URI.encode_www_form_component(slug)}") do |r|
+    r.headers.update(RankMathPoster.auth_headers)
+  end
+  return nil unless res.success?
+  arr = JSON.parse(res.body)
+  arr.is_a?(Array) && arr.first ? arr.first["id"] : nil
+end
+
+def dry_run_preview(post_id)
+  post = RankMathPoster.get_post(post_id)
+  title = post.dig("title","rendered") || ""
+  html  = post.dig("content","rendered") || ""
+  slug  = post["slug"]
+  # タグ名取得
+  tags  = RankMathPoster.send(:fetch_tag_names, post["tags"]) rescue [] # 直接呼べない場合は安全に
+  meta  = SeoMetaBuilder.build_meta(title: title, html: html, slug: slug, tags: tags)
+
+  # featured image をSNSにも流用
+  if (fid = post["featured_media"].to_i) > 0
+    if (img_url = RankMathPoster.fetch_media_url(fid) rescue nil)
+      meta["rank_math_facebook_image"] = img_url
+      meta["rank_math_twitter_image"]  = img_url
+    end
+  end
+
+  {
+    id: post_id,
+    title: title,
+    slug: slug,
+    meta: meta
+  }
+end
+
+tokens = []
+tokens.concat options[:ids].map(&:to_s)
+tokens.concat options[:slugs]
+tokens.concat options[:urls]
+tokens.concat parse_stdin if options[:stdin]
+
+abort!("対象が指定されていません。--id / --ids / --slug / --url / --stdin のいずれかを使ってください") if tokens.empty?
+
+resolved_ids = []
+tokens.each do |t|
+  id = token_to_post_id(t)
+  if id && id > 0
+    resolved_ids << id
+  else
+    $stderr.puts "[WARN] 解決できませんでした: #{t}"
+  end
+end
+abort!("有効な投稿IDが見つかりませんでした") if resolved_ids.empty?
+
+# 実行
+errors = 0
+resolved_ids.uniq.each do |pid|
+  begin
+    if options[:dry_run]
+      preview = dry_run_preview(pid)
+      puts JSON.pretty_generate(preview)
+    else
+      say("[*] updating post ##{pid} ...", quiet: options[:quiet])
+      RankMathPoster.update_rankmath_for_post!(post_id: pid)
+      say("[OK] updated post ##{pid}", quiet: options[:quiet])
+    end
+  rescue => e
+    errors += 1
+    $stderr.puts "[ERROR] post ##{pid}: #{e.class} #{e.message}"
+  end
+end
+
+exit(errors.zero? ? 0 : 1)

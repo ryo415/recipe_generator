@@ -15,6 +15,8 @@ GEM
       multipart-post (~> 2.0)
     faraday-net_http (3.4.1)
       net-http (>= 0.5.0)
+    faraday-retry (2.3.2)
+      faraday (~> 2.0)
     fastimage (2.4.0)
     ffi (1.17.2)
     ffi (1.17.2-x86_64-linux-gnu)
@@ -49,6 +51,7 @@ DEPENDENCIES
   dotenv (~> 3.1)
   faraday (~> 2.10)
   faraday-multipart (~> 1.0)
+  faraday-retry
   fastimage (~> 2.3)
   mini_magick (~> 4.12)
   ruby-vips (~> 2.2)

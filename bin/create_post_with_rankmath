@@ -1,0 +1,109 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# RankMathPoster.create_post_with_rankmath! を CLI からテスト実行する bin
+# 使い方は下の「Examples」を参照
+
+require "optparse"
+require "json"
+require "time"
+
+# ライブラリを読み込む（lib/ 以下に配置している想定）
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "rank_math_poster"
+require "seo_meta_builder"
+
+def abort!(msg, code: 1)
+  $stderr.puts("[ERROR] #{msg}")
+  exit(code)
+end
+
+def slugify(s)
+  s = s.to_s.downcase
+  s = s.tr("　", " ").gsub(/[^\w\-]+/, "-") # 日本語は落ちるが簡易にASCII化
+  s = s.gsub(/-+/, "-").gsub(/\A-|- \z/x, "")
+  s = s.gsub(/\A-|-+\z/, "")
+  return s unless s.empty?
+  "post-#{Time.now.strftime("%Y%m%d-%H%M%S")}"
+end
+
+options = {
+  status: "draft",
+  tags:   [],
+  html:   nil,
+  html_file: nil,
+  stdin:  false,
+}
+
+parser = OptionParser.new do |o|
+  o.banner = "Usage: bin/create_post_with_rankmath [options]\n\n" \
+             "Examples:\n" \
+             "  # HTMLファイルから投稿（公開）\n" \
+             "  bundle exec bin/create_post_with_rankmath \\\n" \
+             "    --title '鶏むね肉のガリバタ炒め' \\\n" \
+             "    --slug 'garibata-chicken' \\\n" \
+             "    --status publish \\\n" \
+             "    --tags '鶏むね肉,ガリバタ,時短' \\\n" \
+             "    --html-file ./body.html\n\n" \
+             "  # 標準入力から本文を渡す\n" \
+             "  cat body.html | bundle exec bin/create_post_with_rankmath --title 'テスト投稿' --stdin --status draft\n"
+
+  o.on("--title TITLE", "必須: 投稿タイトル") { |v| options[:title] = v }
+  o.on("--slug SLUG", "任意: スラッグ（未指定ならタイトルから生成）") { |v| options[:slug] = v }
+  o.on("--status STATUS", "任意: publish/draft（default: draft）") { |v| options[:status] = v }
+  o.on("--tags TAGS", "任意: カンマ区切りタグ（例: '鶏むね肉,ガリバタ,時短'）") { |v| options[:tags] = v.split(/\s*,\s*/) }
+  o.on("--html-file PATH", "任意: 本文HTMLファイルのパス") { |v| options[:html_file] = v }
+  o.on("--html HTML", "任意: 本文HTMLを直接文字列で（短文テスト向け）") { |v| options[:html] = v }
+  o.on("--stdin", "任意: 本文を標準入力から読む（--html/--html-fileより優先）") { options[:stdin] = true }
+  o.on("-h", "--help", "ヘルプを表示") { puts o; exit(0) }
+end
+
+begin
+  parser.parse!
+rescue OptionParser::ParseError => e
+  abort!(e.message + "\n\n" + parser.to_s)
+end
+
+abort!("--title は必須です") if options[:title].to_s.strip.empty?
+
+html =
+  if options[:stdin]
+    STDIN.read
+  elsif options[:html]
+    options[:html]
+  elsif options[:html_file]
+    abort!("--html-file が見つかりません: #{options[:html_file]}") unless File.exist?(options[:html_file])
+    File.read(options[:html_file])
+  else
+    abort!("本文がありません。--html / --html-file / --stdin のいずれかを指定してください")
+  end
+
+slug = options[:slug].to_s.strip
+slug = slugify(options[:title]) if slug.empty?
+
+# 実行
+begin
+  post = RankMathPoster.create_post_with_rankmath!(
+    title:  options[:title],
+    html:   html,
+    slug:   slug,
+    status: options[:status],
+    tags:   options[:tags]
+  )
+
+  id   = post["id"]
+  link = post["link"] || post["guid"]&.dig("rendered")
+  puts "[OK] created post ##{id}"
+  puts "URL: #{link}" if link
+  puts "Title: #{post.dig("title","rendered")}"
+  puts "Status: #{post["status"]}"
+  puts "Slug: #{post["slug"]}"
+  puts "RankMath meta sent automatically (title/description/focus_keyword/canonical + SNS)"
+rescue => e
+  $stderr.puts "[ERROR] create failed: #{e.class} #{e.message}"
+  # Faraday のレスポンス本文が例外メッセージに入っている場合もある
+  if e.respond_to?(:response) && e.response
+    $stderr.puts e.response[:body]
+  end
+  exit 1
+end

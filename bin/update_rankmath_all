@@ -1,0 +1,203 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# 既存の投稿を一括で Rank Math メタ更新
+#
+# 使い方の例はスクリプト末尾のヘルプ参照
+#
+# 注意:
+#  - デフォルトは post（投稿）のみ。page を対象にする場合は --type page を指定。
+#  - WP REST は per_page 最大 100。ページングして全件処理します。
+
+require "optparse"
+require "json"
+require "uri"
+require "cgi"
+require "time"
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "config"
+require "rank_math_poster"
+require "seo_meta_builder"
+
+def abort!(msg, code: 1)
+  $stderr.puts "[ERROR] #{msg}"
+  exit(code)
+end
+
+options = {
+  type: "posts",                 # "posts" or "pages"
+  status: "publish",             # 例: "publish,draft" / "any" で主要ステータス全部
+  per_page: 100,                 # 1..100
+  max: nil,                      # 総件数の上限（nil で無制限）
+  after: nil,                    # ISO8601 (例: 2024-01-01T00:00:00)
+  days: nil,                     # 直近N日分だけ
+  sleep: 0.0,                    # 1件ごとのスリープ秒
+  dry_run: false,
+  quiet: false
+}
+
+HELP = <<~H
+Usage:
+  bundle exec bin/update_rankmath_all [options]
+
+Examples:
+  # 公開済み投稿を全件ドライランで確認
+  bundle exec bin/update_rankmath_all --dry-run
+
+  # 公開 + 下書きを対象に実行（本番）
+  bundle exec bin/update_rankmath_all --status publish,draft
+
+  # 直近30日分だけ処理、1件ごとに0.2秒スリープ
+  bundle exec bin/update_rankmath_all --days 30 --sleep 0.2
+
+  # ページ（固定ページ）を対象に
+  bundle exec bin/update_rankmath_all --type pages
+
+Options:
+  --type TYPE          対象タイプ: posts|pages (default: posts)
+  --status STATUSES    カンマ区切り or 'any'（publish,draft,future,private,pending）(default: publish)
+  --per-page N         1..100 (default: 100)
+  --max N              最大処理件数の上限
+  --after ISO8601      この日時以降のものだけ（例: 2024-01-01T00:00:00）
+  --days N             直近N日分だけ（--after より簡単）
+  --sleep SEC          1件ごとの待機秒（Rate Limit対策）
+  --dry-run            送信せずプレビュー
+  --quiet              ログ簡略表示
+  -h, --help           ヘルプ
+H
+
+parser = OptionParser.new do |o|
+  o.banner = HELP
+  o.on("--type TYPE", %w[posts pages], "posts または pages") { |v| options[:type] = v }
+  o.on("--status STATUSES", "例: 'publish' / 'publish,draft' / 'any'") { |v| options[:status] = v }
+  o.on("--per-page N", Integer) { |v| options[:per_page] = v }
+  oon = ->(k){ o.on("--#{k} N", Integer) { |v| options[k.to_sym] = v } }
+  oon.call("max")
+  o.on("--after ISO8601", "例: 2024-01-01T00:00:00") { |v| options[:after] = v }
+  o.on("--days N", Integer, "直近N日") { |v| options[:days] = v }
+  o.on("--sleep SEC", Float, "1件ごと待機秒") { |v| options[:sleep] = v }
+  o.on("--dry-run", "送信せずメタ生成のみ") { options[:dry_run] = true }
+  o.on("--quiet", "進捗を簡潔に") { options[:quiet] = true }
+  o.on("-h", "--help") { puts HELP; exit 0 }
+end
+
+begin
+  parser.parse!
+rescue OptionParser::ParseError => e
+  abort!(e.message + "\n\n" + HELP)
+end
+
+def say(msg, quiet:)
+  puts msg unless quiet
+end
+
+def statuses_param(s)
+  return "publish,draft,future,private,pending" if s.strip.downcase == "any"
+  s
+end
+
+def build_after(options)
+  return options[:after] if options[:after]
+  return nil unless options[:days]
+  (Time.now - options[:days].to_i * 86_400).utc.iso8601
+end
+
+def list_endpoint(type)
+  base = Config.wp_base
+  path = type == "pages" ? "pages" : "posts"
+  "#{base}/wp-json/wp/v2/#{path}"
+end
+
+def fetch_page(url, params)
+  RankMathPoster.conn.get(url, params) do |r|
+    r.headers.update(RankMathPoster.auth_headers)
+  end
+end
+
+def process_post_id!(id, type:, options:)
+  if options[:dry_run]
+    prev = RankMathPoster.get_post(id)  # posts エンドポイント想定
+    title = prev.dig("title","rendered") || ""
+    slug  = prev["slug"]
+    html  = prev.dig("content","rendered") || ""
+    tags  = RankMathPoster.send(:fetch_tag_names, prev["tags"]) rescue []
+    meta  = SeoMetaBuilder.build_meta(title: title, html: html, slug: slug, tags: tags)
+    if (fid = prev["featured_media"].to_i) > 0
+      if (img_url = RankMathPoster.fetch_media_url(fid) rescue nil)
+        meta["rank_math_facebook_image"] = img_url
+        meta["rank_math_twitter_image"]  = img_url
+      end
+    end
+    puts JSON.generate({id: id, slug: slug, meta: meta})
+  else
+    # posts のみ対応。pages を処理したい場合は RankMathPoster に
+    # update_rankmath_for_page! を用意してください（下のメモ参照）。
+    RankMathPoster.update_rankmath_for_post!(post_id: id)
+  end
+end
+
+# メインループ
+begin
+  url = list_endpoint(options[:type])
+  statuses = statuses_param(options[:status])
+  after_iso = build_after(options)
+
+  page = 1
+  total_pages = nil
+  processed = 0
+  errors = 0
+
+  loop do
+    params = {
+      per_page: options[:per_page],
+      page: page,
+      status: statuses,
+      orderby: "date",
+      order: "asc",
+      context: "edit" # 認証ありの詳細を取る
+    }
+    params[:after] = after_iso if after_iso
+
+    res = fetch_page(url, params)
+    if res.status == 400 && res.body.to_s.include?("rest_post_invalid_page_number")
+      break
+    end
+    unless res.success?
+      warn "[ERROR] list page=#{page} status=#{res.status} body=#{res.body}"
+      break
+    end
+
+    total_pages ||= (res.headers["x-wp-totalpages"] || "1").to_i
+    items = JSON.parse(res.body)
+    break if items.empty?
+
+    say "[*] page #{page}/#{total_pages} (#{items.size} items)", quiet: options[:quiet]
+
+    items.each do |post|
+      id = post["id"].to_i
+      begin
+        process_post_id!(id, type: options[:type], options: options)
+        processed += 1
+      rescue => e
+        errors += 1
+        warn "[ERROR] id=#{id} #{e.class}: #{e.message}"
+      end
+      sleep options[:sleep] if options[:sleep] && options[:sleep] > 0
+      if options[:max] && processed >= options[:max].to_i
+        say "[*] reached max=#{options[:max]}", quiet: options[:quiet]
+        raise :done
+      end
+    end
+
+    page += 1
+    break if total_pages && page > total_pages
+  end
+
+rescue :done
+  # 正常終了（max 到達）
+rescue => e
+  abort!("unexpected error: #{e.class} #{e.message}")
+ensure
+  puts "[SUMMARY] processed=#{processed} errors=#{errors}"
+end
