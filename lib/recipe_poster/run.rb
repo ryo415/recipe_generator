@@ -195,15 +195,23 @@ module RecipePoster
       end
 
       tokens = tokens.map { |t| ascii_slugify(t) }.reject(&:empty?).uniq
+
+      # 4) すべて空ならフォールバック： meal頭文字 + 短いハッシュ
+      if tokens.empty?
+        digest = Digest::SHA1.hexdigest(recipe["title"].to_s)[0, 6]
+        base = "#{meal[0]}-#{digest}"
+        return ensure_unique_slug(base, max_len: max_len)
+      end
+
       base = ([meal[0]] + tokens).join("-") # 例: "d-cold-pasta"
       slug = ensure_unique_slug(base, max_len: max_len)
 
-      # 4) すべて空ならフォールバック： meal頭文字 + 短いハッシュ
       if slug.nil? || slug.empty?
         digest = Digest::SHA1.hexdigest(recipe["title"].to_s)[0, 6]
-        slug = "#{meal[0]}-#{digest}"
+        ensure_unique_slug("#{meal[0]}-#{digest}", max_len: max_len)
+      else
+        slug
       end
-      slug
     end
 
     def hashtagify(str)
