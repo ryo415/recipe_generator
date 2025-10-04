@@ -174,6 +174,12 @@ module RecipePoster
       clean_steps = Array(recipe["steps"]).map { |s| strip_step_prefix(s) }
       steps_html  = clean_steps.map { |s| "<li>#{s}</li>" }.join
       tips      = (recipe["tips"] || []).map { |t| "<li>#{t}</li>" }.join
+      trivia    = recipe["trivia"].to_s.strip
+      trivia_html = if trivia.empty?
+        ""
+      else
+        %Q{          <h2>豆知識</h2>\n          <p class="rp-trivia">#{trivia}</p>\n}
+      end
 
       # === JSON-LD を構築 ===
       require "json"
@@ -232,6 +238,7 @@ module RecipePoster
 
           <h2>概要</h2>
           <p>#{recipe["summary"]}</p>
+#{trivia_html}
           <ul class="rp-meta">
           <li>想定人数: #{recipe["servings"]}人分</li>
             <li>調理時間: 約#{recipe["time_minutes"]}分</li>

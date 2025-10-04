@@ -28,6 +28,7 @@ module RecipePoster
         * 避けたい料理名: #{avoid_titles.join(", ")}
         * 避けたい主材料: #{avoid_ingredients.join(", ")}
         * 避けたい調理法: #{avoid_methods.join(", ")}
+      - 作る料理または主要な食材に関する豆知識を1つ、100字以内で添える。
 
       # 出力は必ず JSON（UTF-8）で。キー厳守
       {
@@ -41,6 +42,7 @@ module RecipePoster
         "nutrition": {"kcal": integer, "protein_g": integer, "fat_g": integer, "carb_g": integer},
         "slug_tokens_en": [string, ...],
         "hashtags": [string, ...],
+        "trivia": string,
 
         // 多様性メタ（新規）
         "primary_ingredient": string, // 例: 鶏むね肉 / 豚こま / 豆腐 / そうめん
@@ -123,6 +125,7 @@ module RecipePoster
       - 日本の家庭で作りやすい（手に入る食材、道具）
       - 季節感・気温に合う献立（暑い日はさっぱり・冷たい、寒い日は温かい・滋養 など）
       - 1品で主菜になること。所要時間は45分以内目標
+      - 料理または主要な食材についての豆知識を1つ、100字以内で必ず含める。
 
       # 出力は必ずJSON（UTF-8, 改行含む）で（キー名厳守）
       {
@@ -135,7 +138,8 @@ module RecipePoster
         "tips": [string, ...],
         "slug_tokens_en": [string, ...],
         "nutrition": {"kcal": integer, "protein_g": integer, "fat_g": integer, "carb_g": integer},
-        "hashtags": [string, ...]
+        "hashtags": [string, ...],
+        "trivia": string
       }
       PROMPT
     end
