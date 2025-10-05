@@ -4,6 +4,7 @@ require "faraday"
 require "securerandom"
 require "base64"
 
+require_relative "logging"
 require_relative "rate_limit"
 require_relative "config"
 require_relative "wordpress"
@@ -35,14 +36,14 @@ module RecipePoster
                         max_retries: (ENV["OPENAI_IMAGE_MAX_RETRIES"] || "6").to_i,
                         base_sleep_ms: (ENV["OPENAI_IMAGE_BACKOFF_BASE_MS"] || "800").to_i)
 
-      puts "[INFO] start generate_bytes"
+      Logging.info("image.generate_bytes.start", size: size, max_retries: max_retries)
       # 送信前スロットリング/クールダウン（あなたの実装のままでOK）
       RecipePoster::RateLimit.wait_cooldown!("openai_images")
       RecipePoster::RateLimit.throttle!("openai_images",
         min_interval_ms: (ENV["OPENAI_IMAGE_MIN_INTERVAL_MS"] || "25000").to_i
       )
 
-      puts "[INFO] set rate_limit"
+      Logging.debug("image.generate_bytes.rate_limited", key: "openai_images")
 
       size = normalize_size(size) if respond_to?(:normalize_size) # あれば
 
@@ -63,7 +64,7 @@ module RecipePoster
         f.options.write_timeout = http_write_timeout
       end
 
-      puts "[INFO] set image generator config"
+      Logging.debug("image.generate_bytes.http_config", timeout: http_timeout, open_timeout: http_open_timeout, write_timeout: http_write_timeout)
 
       attempts = 0
       loop do
@@ -82,12 +83,12 @@ module RecipePoster
             r.options.write_timeout = http_write_timeout
           end
 
-          puts "[INFO] reqested to image API and generated image"
+          Logging.info("image.generate_bytes.request", attempt: attempts, status: res.status)
         rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
           # ← 追加: タイムアウト/接続失敗も指数バックオフで再試行
           raise "OpenAI image network error: #{e.class}: #{e.message}" if attempts > max_retries
           wait = (base_sleep_ms/1000.0) * (2 ** (attempts - 1)) + rand * 0.8
-          warn "[OPENAI] network error #{e.class} → retry in #{format('%.2f', wait)}s (#{attempts}/#{max_retries})"
+          Logging.warn("image.generate_bytes.retry", error: e.class.name, wait_seconds: format('%.2f', wait), attempt: attempts, max_retries: max_retries)
           sleep wait
           next
         end
@@ -103,7 +104,7 @@ module RecipePoster
           hdr = {}; res.headers.each { |k,v| hdr[k.to_s.downcase] = v }
           ra  = hdr["retry-after"]; ra_f = ra.to_f
           wait = ra_f > 0 ? ra_f : (base_sleep_ms/1000.0) * (2 ** (attempts - 1)) + rand * 0.8
-          warn "[OPENAI] 429/5xx → wait #{format('%.2f', wait)}s (req_id=#{hdr['x-request-id'] || '-'})"
+          Logging.warn("image.generate_bytes.backoff", status: res.status, wait_seconds: format('%.2f', wait), request_id: hdr['x-request-id'] || "-", attempt: attempts)
           sleep wait
           RecipePoster::RateLimit.set_cooldown!("openai_images",
             seconds: (ENV["OPENAI_IMAGE_COOLDOWN_SEC"] || "60").to_i
@@ -115,11 +116,15 @@ module RecipePoster
 
         data0 = JSON.parse(res.body).dig("data", 0) || {}
         if (b64 = data0["b64_json"]).to_s != ""
-          return Base64.decode64(b64)
+          decoded = Base64.decode64(b64)
+          Logging.info("image.generate_bytes.success", attempt: attempts, bytes: decoded.bytesize)
+          return decoded
         elsif (u = data0["url"]).to_s != ""
           img = conn.get(u) { |r| r.options.timeout = http_timeout }  # 画像URL取得もタイムアウト延長
           raise "Fetch image failed: #{img.status}" unless img.success?
-          return img.body
+          body = img.body
+          Logging.info("image.generate_bytes.success", attempt: attempts, bytes: body.bytesize)
+          return body
         else
           raise "OpenAI image: neither b64_json nor url in response"
         end
