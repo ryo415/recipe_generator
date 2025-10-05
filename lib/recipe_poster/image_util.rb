@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "logging"
+
 module RecipePoster
   module ImageUtil
     module_function
@@ -78,7 +80,7 @@ module RecipePoster
         end
       end
     rescue => e
-      warn "[WARN] to_webp_minimagick_file failed: #{e.class}: #{e.message}"
+      Logging.warn("image_util.to_webp_minimagick_file_failed", error: e.class.name, message: e.message)
       bytes
     end
 
@@ -102,7 +104,7 @@ module RecipePoster
         end
       end
     rescue => e
-      warn "[WARN] to_jpeg_minimagick_file failed: #{e.class}: #{e.message}"
+      Logging.warn("image_util.to_jpeg_minimagick_file_failed", error: e.class.name, message: e.message)
       bytes
     end
   end

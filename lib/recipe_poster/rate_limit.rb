@@ -2,6 +2,8 @@
 require "json"
 require "fileutils"
 
+require_relative "logging"
+
 module RecipePoster
   module RateLimit
     module_function
@@ -10,7 +12,7 @@ module RecipePoster
 
     # 例: throttle!("openai_images", min_interval_ms: 2000)
     def throttle!(key, min_interval_ms:)
-      puts "[INFO] start throttle"
+      Logging.info("rate_limit.throttle", key: key, min_interval_ms: min_interval_ms)
       FileUtils.mkdir_p(File.dirname(STATE))
       File.open(STATE, File.exist?(STATE) ? "r+" : "w+") do |f|
         f.flock(File::LOCK_EX)
@@ -20,6 +22,7 @@ module RecipePoster
         elapsed_ms = (now - data[key]) * 1000.0
         wait_ms = min_interval_ms.to_f - elapsed_ms
         if wait_ms > 0
+          Logging.debug("rate_limit.sleep", key: key, wait_ms: wait_ms.round(1))
           sleep(wait_ms / 1000.0)
           now = monotonic
         end
@@ -42,7 +45,7 @@ module RecipePoster
     end
 
     def set_cooldown!(key, seconds:)
-      puts "[INFO] start set_cooldown"
+      Logging.info("rate_limit.set_cooldown", key: key, seconds: seconds)
       FileUtils.mkdir_p(File.dirname(cooldown_path(key)))
       File.write(cooldown_path(key), (monotonic + seconds).to_f.to_s)
     end
@@ -53,6 +56,7 @@ module RecipePoster
       until_time = (File.read(path).to_f rescue 0.0)
       remain = until_time - monotonic
       if remain > 0
+        Logging.info("rate_limit.cooldown_wait", key: key, seconds: remain.round(1))
         sleep(remain)
       else
         File.delete(path) rescue nil
