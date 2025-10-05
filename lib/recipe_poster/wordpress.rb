@@ -170,7 +170,6 @@ module RecipePoster
 
     def build_html(recipe, meta)
       ing_lines = recipe["ingredients"].map { |i| "<li>#{i["item"]} – #{i["amount"]}</li>" }.join
-      steps     = recipe["steps"].each_with_index.map { |s, i| "<li>#{i + 1}. #{s}</li>" }.join
       clean_steps = Array(recipe["steps"]).map { |s| strip_step_prefix(s) }
       steps_html  = clean_steps.map { |s| "<li>#{s}</li>" }.join
       tips      = (recipe["tips"] || []).map { |t| "<li>#{t}</li>" }.join
@@ -178,7 +177,11 @@ module RecipePoster
       trivia_html = if trivia.empty?
         ""
       else
-        %Q{          <h2>豆知識</h2>\n          <p class="rp-trivia">#{trivia}</p>\n}
+        section = <<~HTML
+          <h2>豆知識</h2>
+          <p class="rp-trivia">#{trivia}</p>
+        HTML
+        section.lines.map { |line| "          #{line}" }.join
       end
 
       # === JSON-LD を構築 ===
