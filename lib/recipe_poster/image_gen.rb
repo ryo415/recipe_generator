@@ -84,7 +84,7 @@ module RecipePoster
           end
 
           Logging.info("image.generate_bytes.request", attempt: attempts, status: res.status)
-        rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
+        rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Faraday::SSLError => e
           # ← 追加: タイムアウト/接続失敗も指数バックオフで再試行
           raise "OpenAI image network error: #{e.class}: #{e.message}" if attempts > max_retries
           wait = (base_sleep_ms/1000.0) * (2 ** (attempts - 1)) + rand * 0.8
