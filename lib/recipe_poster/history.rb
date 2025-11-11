@@ -9,13 +9,28 @@ module RecipePoster
 
     FILE = File.expand_path("../../data/recipe_history.json", __dir__)
 
+    THIRTY_DAYS = 30 * 86_400
+
     def load
-      JSON.parse(File.read(FILE)) rescue []
+      arr = JSON.parse(File.read(FILE)) rescue []
+      prune(arr)
     end
 
     def save(arr)
       FileUtils.mkdir_p(File.dirname(FILE))
       File.write(FILE, JSON.pretty_generate(arr))
+    end
+
+    def prune(arr)
+      cutoff = Time.now - THIRTY_DAYS
+      filtered = arr.select do |entry|
+        created_at = entry["created_at"] || ""
+        time = Time.parse(created_at) rescue Time.at(0)
+        time >= cutoff
+      end
+
+      save(filtered) if filtered.length != arr.length
+      filtered
     end
 
     # 直近 days 日ぶん（meal で昼/夜を絞り込み可）
