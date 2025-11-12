@@ -11,144 +11,147 @@ require_relative "x_poster"
 require_relative "history"
 require_relative "image_gen"
 require_relative "image_util"
+require_relative "discord_notifier"
 
 module RecipePoster
   module Run
     module_function
 
     def once(meal)
-      lat, lon = Config.coords
-      forecast = Weather.fetch_daily(lat, lon, tz: Config.tz)
-      weather_text = Weather.code_to_text(forecast[:code])
-      season = Weather.season_for(forecast[:date])
+      with_error_alert(meal: meal, context: "once") do
+        lat, lon = Config.coords
+        forecast = Weather.fetch_daily(lat, lon, tz: Config.tz)
+        weather_text = Weather.code_to_text(forecast[:code])
+        season = Weather.season_for(forecast[:date])
 
-      recent = History.recent(days: 14, meal: meal)
-      avoid = {
-        titles:      recent.map { |e| e["title"] }.compact,
-        ingredients: recent.map { |e| e["primary_ingredient"] }.compact,
-        methods:     recent.map { |e| e["method"] }.compact
-      }
+        recent = History.recent(days: 14, meal: meal)
+        avoid = {
+          titles:      recent.map { |e| e["title"] }.compact,
+          ingredients: recent.map { |e| e["primary_ingredient"] }.compact,
+          methods:     recent.map { |e| e["method"] }.compact
+        }
 
-      Logging.info("history.loaded", meal: meal, days: 14, entries: recent.size)
+        Logging.info("history.loaded", meal: meal, days: 14, entries: recent.size)
 
-      model = Config.models[:model]
-      # recipe = LLM.generate_recipe(forecast: forecast, meal: meal, model: model)
-      recipe = LLM.generate_recipe_diverse(forecast: forecast, meal: meal, model: model, avoid: avoid)
+        model = Config.models[:model]
+        # recipe = LLM.generate_recipe(forecast: forecast, meal: meal, model: model)
+        recipe = LLM.generate_recipe_diverse(forecast: forecast, meal: meal, model: model, avoid: avoid)
 
-      title = recipe["title"]
-      Logging.info("recipe.generated", meal: meal, model: model, title: title)
-      date = Date.parse(forecast[:date]).strftime("%Y-%m-%d")
-      slug = build_short_slug(meal: meal, recipe: recipe, max_len: 40)
+        title = recipe["title"]
+        Logging.info("recipe.generated", meal: meal, model: model, title: title)
+        date = Date.parse(forecast[:date]).strftime("%Y-%m-%d")
+        slug = build_short_slug(meal: meal, recipe: recipe, max_len: 40)
 
-      existing = WordPress.get_by_slug(slug)
+        existing = WordPress.get_by_slug(slug)
 
-      html = WordPress.build_html(recipe, {
-        season: season,
-        weather_text: weather_text,
-        pop: forecast[:pop],
-        tmax: forecast[:tmax],
-        tmin: forecast[:tmin]
-      })
+        html = WordPress.build_html(recipe, {
+          season: season,
+          weather_text: weather_text,
+          pop: forecast[:pop],
+          tmax: forecast[:tmax],
+          tmin: forecast[:tmin]
+        })
 
-      media_id = nil
-      hero_url = nil
-      jpeg_bytes_for_x = nil
+        media_id = nil
+        hero_url = nil
+        jpeg_bytes_for_x = nil
 
-      begin
-        Logging.info("image.pipeline.generate_bytes", meal: meal)
-        # 1) まず gpt-image-1 などで PNG 相当の bytes を取得
-        src_bytes = RecipePoster::ImageGen.generate_bytes!(
-          prompt: RecipePoster::ImageGen.build_image_prompt(recipe: recipe, season: season, weather_text: weather_text),
-          size: ENV["IMG_SIZE"]
+        begin
+          Logging.info("image.pipeline.generate_bytes", meal: meal)
+          # 1) まず gpt-image-1 などで PNG 相当の bytes を取得
+          src_bytes = RecipePoster::ImageGen.generate_bytes!(
+            prompt: RecipePoster::ImageGen.build_image_prompt(recipe: recipe, season: season, weather_text: weather_text),
+            size: ENV["IMG_SIZE"]
+          )
+
+          Logging.info("image.pipeline.generated", bytes: src_bytes.bytesize)
+
+          # 2) WP 用に WebP 化してアップロード
+          webp = RecipePoster::ImageUtil.to_webp(src_bytes)
+          fname = "recipe-#{Time.now.to_i}-#{SecureRandom.hex(3)}.webp"
+          media_id, hero_url = RecipePoster::WordPress.upload_media_from_bytes!(webp, filename: fname, mime: "image/webp")
+
+          Logging.info("image.pipeline.webp_uploaded", media_id: media_id, url: hero_url)
+
+          # 3) X 用に JPEG も作って保持（あとで添付）
+          jpeg_bytes_for_x = RecipePoster::ImageUtil.to_jpeg(src_bytes)
+
+          Logging.info("image.pipeline.jpeg_ready", bytes: jpeg_bytes_for_x&.bytesize)
+        rescue => e
+          Logging.warn("image.pipeline.failed", error: e.class.name, message: e.message)
+          # 失敗時はフォールバック画像（JPEG/PNG）を WP に取り込む
+          if (fallback = ENV["DEFAULT_IMAGE_URL"] || ENV["WP_DEFAULT_IMAGE_URL"])
+            media_id, hero_url = RecipePoster::WordPress.upload_media_from_url!(fallback)
+          end
+        end
+
+        # 本文先頭にも完成画像を挿入
+        if hero_url
+          hero_html = %Q{<figure class="rp-hero"><img src="#{hero_url}" alt="#{title} 完成イメージ" loading="lazy" decoding="async"></figure>}
+          html = hero_html + "\n" + html
+        end
+
+        RecipePoster::History.record!(
+          "meal" => meal,
+          "title" => title,
+          "primary_ingredient" => recipe["primary_ingredient"],
+          "method" => recipe["method"],
+          "category" => recipe["category"],
+          "season" => season
         )
 
-        Logging.info("image.pipeline.generated", bytes: src_bytes.bytesize)
+        Logging.info("history.recorded", meal: meal, title: title)
 
-        # 2) WP 用に WebP 化してアップロード
-        webp = RecipePoster::ImageUtil.to_webp(src_bytes)
-        fname = "recipe-#{Time.now.to_i}-#{SecureRandom.hex(3)}.webp"
-        media_id, hero_url = RecipePoster::WordPress.upload_media_from_bytes!(webp, filename: fname, mime: "image/webp")
+        tags = Array(recipe["hashtags"]).map { |h| h.to_s.sub(/^#/, "") }.reject(&:empty?).uniq
+        tags |= [season, weather_text].compact
 
-        Logging.info("image.pipeline.webp_uploaded", media_id: media_id, url: hero_url)
+        cats = [(meal == "lunch" ? "昼ごはん" : "夜ごはん")]
 
-        # 3) X 用に JPEG も作って保持（あとで添付）
-        jpeg_bytes_for_x = RecipePoster::ImageUtil.to_jpeg(src_bytes)
-
-        Logging.info("image.pipeline.jpeg_ready", bytes: jpeg_bytes_for_x&.bytesize)
-      rescue => e
-        Logging.warn("image.pipeline.failed", error: e.class.name, message: e.message)
-        # 失敗時はフォールバック画像（JPEG/PNG）を WP に取り込む
-        if (fallback = ENV["DEFAULT_IMAGE_URL"] || ENV["WP_DEFAULT_IMAGE_URL"])
-          media_id, hero_url = RecipePoster::WordPress.upload_media_from_url!(fallback)
-        end
-      end
-
-      # 本文先頭にも完成画像を挿入
-      if hero_url
-        hero_html = %Q{<figure class="rp-hero"><img src="#{hero_url}" alt="#{title} 完成イメージ" loading="lazy" decoding="async"></figure>}
-        html = hero_html + "\n" + html
-      end
-
-      RecipePoster::History.record!(
-        "meal" => meal,
-        "title" => title,
-        "primary_ingredient" => recipe["primary_ingredient"],
-        "method" => recipe["method"],
-        "category" => recipe["category"],
-        "season" => season
-      )
-
-      Logging.info("history.recorded", meal: meal, title: title)
-
-      tags = Array(recipe["hashtags"]).map { |h| h.to_s.sub(/^#/, "") }.reject(&:empty?).uniq
-      tags |= [season, weather_text].compact
-
-      cats = [(meal == "lunch" ? "昼ごはん" : "夜ごはん")]
-
-      # --- 投稿作成（featured_media にも同じ画像をセット）---
-      post = if existing.is_a?(Array) && !existing.empty?
-               p = existing.first
-               if media_id && (p["featured_media"].to_i <= 0)
-                 RecipePoster::WordPress.set_featured_media!(p["id"], media_id)
-                 p = RecipePoster::WordPress.get_by_slug(slug).first || p
+        # --- 投稿作成（featured_media にも同じ画像をセット）---
+        post = if existing.is_a?(Array) && !existing.empty?
+                 p = existing.first
+                 if media_id && (p["featured_media"].to_i <= 0)
+                   RecipePoster::WordPress.set_featured_media!(p["id"], media_id)
+                   p = RecipePoster::WordPress.get_by_slug(slug).first || p
+                 end
+                 p
+               else
+                 WordPress.create_post!(
+                   title: title,
+                   html: html,
+                   slug: slug,
+                   status: "publish",
+                   tag_names: tags,
+                   category_names: cats,
+                   featured_media_id: media_id   # ← WebP のメディアIDをアイキャッチに
+                 )
                end
-               p
-             else
-               WordPress.create_post!(
-                 title: title,
-                 html: html,
-                 slug: slug,
-                 status: "publish",
-                 tag_names: tags,
-                 category_names: cats,
-                 featured_media_id: media_id   # ← WebP のメディアIDをアイキャッチに
-               )
-             end
 
-      link = post["link"] || post.dig("guid","rendered") || "#{Config.wp_base}/?p=#{post["id"]}"
-      meal_ja = (meal == "lunch" ? "昼" : "夜")
-      d = Date.parse(forecast[:date]).strftime("%-m/%-d")
-      Logging.info("wordpress.post.created", id: post["id"], status: post["status"], link: link)
+        link = post["link"] || post.dig("guid","rendered") || "#{Config.wp_base}/?p=#{post["id"]}"
+        meal_ja = (meal == "lunch" ? "昼" : "夜")
+        d = Date.parse(forecast[:date]).strftime("%-m/%-d")
+        Logging.info("wordpress.post.created", id: post["id"], status: post["status"], link: link)
 
-      # --- X にも同じ画像を添付（JPEG bytes を使用）---
-      tags_for_x = build_x_hashtags(recipe["hashtags"], season: season, weather_text: weather_text)
-      tweet = "本日の#{meal_ja}（#{d}・#{weather_text}・#{forecast[:tmax]}℃/#{forecast[:tmin]}℃）\n#{title}\n#{link}"
-      tweet = "#{tweet}\n#{tags_for_x}" unless tags_for_x.empty?
+        # --- X にも同じ画像を添付（JPEG bytes を使用）---
+        tags_for_x = build_x_hashtags(recipe["hashtags"], season: season, weather_text: weather_text)
+        tweet = "本日の#{meal_ja}（#{d}・#{weather_text}・#{forecast[:tmax]}℃/#{forecast[:tmin]}℃）\n#{title}\n#{link}"
+        tweet = "#{tweet}\n#{tags_for_x}" unless tags_for_x.empty?
 
-      begin
-        if jpeg_bytes_for_x
-          RecipePoster::XPoster.post_tweet_with_image_bytes!(tweet, jpeg_bytes_for_x, mime: "image/jpeg")
-        elsif hero_url # 最悪URLダウンロード
-          RecipePoster::XPoster.post_tweet_with_image!(tweet, hero_url)
-        else
-          RecipePoster::XPoster.post_tweet!(tweet)
+        begin
+          if jpeg_bytes_for_x
+            RecipePoster::XPoster.post_tweet_with_image_bytes!(tweet, jpeg_bytes_for_x, mime: "image/jpeg")
+          elsif hero_url # 最悪URLダウンロード
+            RecipePoster::XPoster.post_tweet_with_image!(tweet, hero_url)
+          else
+            RecipePoster::XPoster.post_tweet!(tweet)
+          end
+          Logging.info("x.post.succeeded", meal: meal)
+        rescue => e
+          Logging.warn("x.post.failed", error: e.class.name, message: e.message)
         end
-        Logging.info("x.post.succeeded", meal: meal)
-      rescue => e
-        Logging.warn("x.post.failed", error: e.class.name, message: e.message)
-      end
 
-      Logging.info("workflow.completed", meal: meal, link: link)
+        Logging.info("workflow.completed", meal: meal, link: link)
+      end
     end
 
     # base が重複していたら -2, -3... を試し、それでもダメなら極小IDを付加
@@ -263,5 +266,14 @@ module RecipePoster
       puts "Scheduler started (12:00 / 18:00 JST). Press Ctrl+C to exit."
       scheduler.join
     end
+
+    def with_error_alert(meal:, context:)
+      yield
+    rescue => e
+      Logging.error("workflow.failed", meal: meal, context: context, error: e.class.name, message: e.message)
+      DiscordNotifier.alert_error!(e, meal: meal, context: context)
+      raise
+    end
+    private :with_error_alert
   end
 end
